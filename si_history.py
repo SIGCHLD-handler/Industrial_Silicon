@@ -11,7 +11,7 @@ warnings.filterwarnings("ignore")
 import rqdatac as rq
 rq.init()
 
-index_weight = pd.read_json("index_weight.json")[0]
+index_weight = pd.read_json("index_info.json")["weight"]
 
 si_data = rq.futures.get_dominant_price("SI", frequency="1m").loc["SI"]
 

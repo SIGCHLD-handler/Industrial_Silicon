@@ -11,11 +11,18 @@ import argparse
 import time
 import re
 
-from index_weight import calculate_index_weight
+from IPython.utils import io
+from index import calculate_index_weight
 
 start_date = pd.to_datetime("20230101")
 open_time = pd.to_datetime(dt.date.today().strftime("%Y-%m-%d ") + "09:00:00")
 close_time = pd.to_datetime(dt.date.today().strftime("%Y-%m-%d ") + "15:00:00")
+
+index_info = pd.read_json("index_info.json")
+
+with io.capture_output() as _:
+    gfex_text = ak.match_main_contract(symbol="gfex")
+si_dom = gfex_text[:6]
 
 def get_minute(symbol: str):
 
@@ -34,28 +41,18 @@ def get_minute(symbol: str):
 def calculate_index():
 
     all_data = pd.DataFrame()
-    for symbol in symbol_list:
-        if ''.join(re.findall(r'[A-Z]', symbol)) in other_corr.index:
-            data = get_minute(symbol)
-            data = (data.diff() / data.shift()).fillna(0)
-            all_data = pd.concat([all_data, data], axis=1).fillna(0)
+    for symbol in index_info["symbol"]:
+        data = get_minute(symbol)
+        data = (data.diff() / data.shift()).fillna(0)
+        all_data = pd.concat([all_data, data], axis=1).fillna(0)
     
-    all_data = all_data[si_corr.index]
-    index = (all_data.apply(lambda x: np.dot(result.x, x), axis=1) + 1).cumprod()
+    all_data = all_data[index_info.index]
+    index = (all_data.apply(lambda x: np.dot(index_info["weight"], x), axis=1) + 1).cumprod()
     index = index[(index.index >= open_time) & (index.index <= close_time)].asfreq("1min")
 
     return index
 
-si_dom = None
-for symbol in symbol_list:
-    if symbol[:2] == "SI":
-        si_dom = symbol
-        break
-
 def get_minute_si():
-
-    if si_dom == None:
-        raise ValueError("No dominant contract loaded!")
 
     data = ak.futures_zh_minute_sina(si_dom)
     data = data.set_index("datetime", drop=True)
@@ -73,21 +70,24 @@ def get_minute_si():
     
     return minute_price, vwap, volume
 
-minute_price, vwap, volume = get_minute_si()
-index = calculate_index() * minute_price.iloc[0]
+def main_plot():
 
-fig, ax1 = plt.subplots(figsize=(12, 6))
-ax1.plot(minute_price, label="SI2511")
-ax1.plot(vwap, label="VWAP")
-ax1.plot(index, label="Index")
-ax2 = ax1.twinx()
-ax2.bar(volume.index - pd.Timedelta(seconds=30), volume, color="grey", width=1e-4)
-ax1.legend()
-plt.gca().xaxis.set_major_formatter(mdt.DateFormatter('%H:%M'))
-plt.grid(True)
-plt.show()
+    minute_price, vwap, volume = get_minute_si()
+    index = calculate_index() * minute_price.iloc[0]
 
-def main():
+    fig, ax1 = plt.subplots(figsize=(12, 6))
+    ax1.plot(minute_price, label="SI2511")
+    ax1.plot(vwap, label="VWAP")
+    ax1.plot(index, label="Index")
+    ax2 = ax1.twinx()
+    ax2.bar(volume.index - pd.Timedelta(seconds=30), volume, color="grey", width=1e-4)
+    ax1.legend()
+    plt.gca().xaxis.set_major_formatter(mdt.DateFormatter('%H:%M'))
+    ax1.grid(True)
+    plt.show()
+
+if __name__ == "__main__":
+
     parser = argparse.ArgumentParser(
         description="Minute-by-minute market monitoring for the dominant industrial silicon future contract.",
         epilog="Example: python si_monitor.py --new_index"
@@ -99,3 +99,6 @@ def main():
 
     if args.new_index:
         calculate_index_weight()
+    
+    main_plot()
+
