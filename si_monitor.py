@@ -14,7 +14,6 @@ import re
 from IPython.utils import io
 from index import calculate_index_weight
 
-start_date = pd.to_datetime("20230101")
 open_time = pd.to_datetime(dt.date.today().strftime("%Y-%m-%d ") + "09:00:00")
 close_time = pd.to_datetime(dt.date.today().strftime("%Y-%m-%d ") + "15:00:00")
 
@@ -93,7 +92,7 @@ if __name__ == "__main__":
         epilog="Example: python si_monitor.py --new_index"
     )
 
-    parser.add_argument("--new_index", action="store_true", help="Launch a new calculation of index weight.")
+    parser.add_argument("--new_index", action="store_true", help="launch a new calculation of index weight")
 
     args = parser.parse_args()
 
