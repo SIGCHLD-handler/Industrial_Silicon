@@ -1,3 +1,8 @@
+"""
+泰山崩于前而色不变
+麋鹿兴于左而目不瞬
+"""
+
 import warnings
 warnings.filterwarnings("ignore")
 
@@ -15,7 +20,7 @@ import re
 plt.rcParams['font.sans-serif'] = ['SimHei']
 plt.rcParams['axes.unicode_minus'] = False
 
-no_spread = False
+spread = False
 rq_ready = True
 try:
     import rqdatac as rq
@@ -125,8 +130,8 @@ def recommend_spread(date: dt.datetime):
 
 def calculate_beta(si_val, index_val):
     
-    all_X = index_val.diff(5) / index_val.shift(5)
-    all_y = si_val.diff(5) / si_val.shift(5)
+    all_X = index_val.diff(3) / index_val.shift(3)
+    all_y = si_val.diff(3) / si_val.shift(3)
 
     def regression(si_series: pd.Series):
         y = si_series
@@ -134,8 +139,7 @@ def calculate_beta(si_val, index_val):
         X = sm.add_constant(X)
         return sm.OLS(y, X).fit().params.iloc[1]
     
-    # beta = all_y.reindex(index_val.index).rolling(5).apply(regression).reindex(si_val.index)
-    beta = all_y / all_X
+    beta = all_y.reindex(index_val.index).rolling(5).apply(regression).reindex(si_val.index)
 
     pos_X = all_X[all_X >= 0]
     neg_X = all_X[all_X < 0]
@@ -151,7 +155,10 @@ def main(price: float=None, date: dt.datetime=None):
 
     today_open, minute_price, vwap, volume = get_minute_si(date)
     index = calculate_index(date).reindex(minute_price.index)
-    beta, pn_ratio = calculate_beta(index, minute_price / minute_price.iloc[0])
+    try:
+        beta, pn_ratio = calculate_beta(index, minute_price / minute_price.iloc[0])
+    except:
+        beta, pn_ratio = None, None
     index = index * minute_price.iloc[0]
     numeric_index = np.arange(len(minute_price))
     xticks = numeric_index[::15]
@@ -174,19 +181,21 @@ def main(price: float=None, date: dt.datetime=None):
     ax1.grid(True)
 
     ax2.plot(numeric_index, minute_price - index)
-    if not no_spread:
+    if spread:
         ax2.axhline(recommend_spread(date), linestyle="--", color="orange")
-    ax2_ = ax2.twinx()
-    ax2_.bar(numeric_index, beta, color="grey", width=0.5)
+    if beta is not None:
+        ax2_ = ax2.twinx()
+        ax2_.bar(numeric_index, beta, color="grey", width=0.5)
     ax2_.axhline(0, color="red")
     ax2.set_xlim(0, 225)
     ax2.set_xticks(xticks, [minute_price.index[i].strftime('%H:%M') for i in xticks])
     ax2.grid(True)
 
     plt.tight_layout(rect=[0, 0, 0.9, 0.98])
-    fig.text(0.92, 0.25, 
-        "%.2f%%" % (pn_ratio * 100), fontsize=12, 
-        bbox=dict(boxstyle='round', facecolor=("green" if pn_ratio < 1 else "red"), alpha=0.5))
+    if pn_ratio is not None:
+        fig.text(0.92, 0.25, 
+            "%.2f%%" % (pn_ratio * 100), fontsize=12, 
+            bbox=dict(boxstyle='round', facecolor=("green" if pn_ratio < 1 else "red"), alpha=0.5))
     
     if (last_data := get_last_price(date)):
         last_close, last_settle = last_data
@@ -208,20 +217,20 @@ if __name__ == "__main__":
 
     parser = argparse.ArgumentParser(
         description="Minute-by-minute market monitoring for the dominant industrial silicon future contract.",
-        epilog="Example: python si_monitor.py --new_index"
+        epilog="Example: python si_monitor.py --price [8725] --date [2025-09-15] --index --spread"
     )
 
     parser.add_argument("--price", type=float, help="set the open price of current position")
     parser.add_argument("--date", type=str, help="set the date to observe")
-    parser.add_argument("--new_index", action="store_true", help="launch a new calculation of index weight")
-    parser.add_argument("--no_spread", action="store_true", help="not to show recommended spread")
+    parser.add_argument("--index", action="store_true", help="launch a new calculation of index weight")
+    parser.add_argument("--spread", action="store_true", help="show recommended spread")
 
     args = parser.parse_args()
 
-    if args.new_index:
+    if args.index:
         calculate_index_weight()
-    if args.no_spread:
-        no_spread = True
+    if args.spread:
+        spread = True
 
     date = pd.to_datetime(dt.date.today())
     if rq_ready and args.date:
