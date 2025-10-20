@@ -17,8 +17,8 @@ import matplotlib.gridspec as gs
 import argparse
 import re
 
-plt.rcParams['font.sans-serif'] = ['SimHei']
-plt.rcParams['axes.unicode_minus'] = False
+plt.rcParams["font.sans-serif"] = ["SimHei"]
+plt.rcParams["axes.unicode_minus"] = False
 
 spread = False
 rq_ready = True
@@ -108,10 +108,15 @@ def get_last_price(date: dt.datetime):
 
     date_idx = date_list[date_list == date].index[0]
     last_date = date_list[date_idx-1]
-    data = ak.futures_zh_daily_sina("SI2511").set_index("date")
-    data.index = pd.to_datetime(data.index)
-    data = data.loc[last_date, :]
-    return data["close"], data["settle"]
+    if date == pd.to_datetime(dt.date.today()):
+        data = ak.futures_zh_daily_sina(si_dom).set_index("date")
+        data.index = pd.to_datetime(data.index)
+        data = data.loc[last_date, :]
+        return data["close"], data["settle"]
+    else:
+        data = rq.futures.get_dominant_price("SI", frequency="1d").loc["SI"]
+        data = data.loc[date, :]
+        return data["prev_close"], data["prev_settlement"]
 
 
 def recommend_spread(date: dt.datetime):
@@ -128,18 +133,27 @@ def recommend_spread(date: dt.datetime):
     return -cum_spread - 5
 
 
-def calculate_beta(si_val, index_val):
+def regression(si_val, index_val):
     
-    all_X = index_val.diff(3) / index_val.shift(3)
-    all_y = si_val.diff(3) / si_val.shift(3)
+    all_X = index_val.diff() / index_val.shift()
+    all_y = si_val.diff() / si_val.shift()
 
-    def regression(si_series: pd.Series):
+    def reg_alpha(si_series: pd.Series):
         y = si_series
         X = all_X.reindex(si_series.index)
         X = sm.add_constant(X)
-        return sm.OLS(y, X).fit().params.iloc[1]
+        model_params = sm.OLS(y, X).fit().params
+        return model_params.iloc[0]
     
-    beta = all_y.reindex(index_val.index).rolling(5).apply(regression).reindex(si_val.index)
+    def reg_beta(si_series: pd.Series):
+        y = si_series
+        X = all_X.reindex(si_series.index)
+        X = sm.add_constant(X)
+        model_params = sm.OLS(y, X).fit().params
+        return model_params.iloc[1]
+
+    alpha = all_y.reindex(index_val.index).rolling(10).apply(reg_alpha).reindex(si_val.index)
+    beta = all_y.reindex(index_val.index).rolling(10).apply(reg_beta).reindex(si_val.index)
 
     pos_X = all_X[all_X >= 0]
     neg_X = all_X[all_X < 0]
@@ -148,25 +162,24 @@ def calculate_beta(si_val, index_val):
     pos_beta = sm.OLS(pos_y, sm.add_constant(pos_X)).fit().params.iloc[1]
     neg_beta = sm.OLS(neg_y, sm.add_constant(neg_X)).fit().params.iloc[1]
 
-    return beta - 1, pos_beta / neg_beta
+    return alpha, beta, pos_beta / neg_beta
 
 
 def main(price: float=None, date: dt.datetime=None):
 
     today_open, minute_price, vwap, volume = get_minute_si(date)
-    index = calculate_index(date).reindex(minute_price.index)
+    index = calculate_index(date).reindex(minute_price.index) * minute_price.iloc[0]
     try:
-        beta, pn_ratio = calculate_beta(index, minute_price / minute_price.iloc[0])
+        alpha, beta, pn_ratio = regression(index, minute_price)
     except:
-        beta, pn_ratio = None, None
-    index = index * minute_price.iloc[0]
+        alpha, beta, pn_ratio = None, None, None
     numeric_index = np.arange(len(minute_price))
     xticks = numeric_index[::15]
 
     fig, axes = plt.subplots(2, 1, figsize=(12, 6), gridspec_kw={'height_ratios': [3, 1]})
 
     ax1, ax2 = axes
-    ax1.plot(numeric_index, minute_price, label="SI2511")
+    ax1.plot(numeric_index, minute_price, label=si_dom)
     ax1.plot(numeric_index, vwap, label="VWAP")
     ax1.plot(numeric_index, index, label="Index")
     if price:
@@ -185,8 +198,8 @@ def main(price: float=None, date: dt.datetime=None):
         ax2.axhline(recommend_spread(date), linestyle="--", color="orange")
     if beta is not None:
         ax2_ = ax2.twinx()
-        ax2_.bar(numeric_index, beta, color="grey", width=0.5)
-    ax2_.axhline(0, color="red")
+        ax2_.bar(numeric_index, alpha, color="grey", width=0.5)
+        ax2_.axhline(0, color="red")
     ax2.set_xlim(0, 225)
     ax2.set_xticks(xticks, [minute_price.index[i].strftime('%H:%M') for i in xticks])
     ax2.grid(True)
