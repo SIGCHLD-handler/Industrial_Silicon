@@ -12,15 +12,14 @@ import akshare as ak
 import datetime as dt
 import statsmodels.api as sm
 import matplotlib.pyplot as plt
-import matplotlib.dates as mdt
-import matplotlib.gridspec as gs
 import argparse
 import re
+from scipy.signal import savgol_filter
 
 plt.rcParams["font.sans-serif"] = ["SimHei"]
 plt.rcParams["axes.unicode_minus"] = False
 
-spread = False
+rec_spread = False
 rq_ready = True
 try:
     import rqdatac as rq
@@ -36,16 +35,12 @@ date_list = pd.to_datetime(ak.tool_trade_date_hist_sina()["trade_date"])
 
 index_info = pd.read_json("index_info.json")
 
-with io.capture_output() as _:
-    gfex_text = ak.match_main_contract(symbol="gfex")
-si_dom = gfex_text[:6]
-
 def get_minute(symbol: str, date: dt.datetime):
 
     underlying = ''.join(re.findall(r'[A-Z]', symbol))
 
     if date != pd.to_datetime(dt.date.today()):
-        data = rq.futures.get_dominant_price(underlying, frequency="1m").loc[underlying]
+        data = rq.futures.get_dominant_price(underlying, frequency="1m", adjust_type="none").loc[underlying]
         data = data[data["trading_date"] == date]
     else:
         data = ak.futures_zh_minute_sina(symbol)
@@ -83,7 +78,7 @@ def calculate_index(date: dt.datetime):
 def get_minute_si(date: dt.datetime):
 
     if date != pd.to_datetime(dt.date.today()):
-        data = rq.futures.get_dominant_price("SI", frequency="1m").loc["SI"]
+        data = rq.futures.get_dominant_price("SI", frequency="1m", adjust_type="none").loc["SI"]
         data = data[data["trading_date"] == date]
     else:
         data = ak.futures_zh_minute_sina(si_dom)
@@ -114,7 +109,7 @@ def get_last_price(date: dt.datetime):
         data = data.loc[last_date, :]
         return data["close"], data["settle"]
     else:
-        data = rq.futures.get_dominant_price("SI", frequency="1d").loc["SI"]
+        data = rq.futures.get_dominant_price("SI", frequency="1d", adjust_type="none").loc["SI"]
         data = data.loc[date, :]
         return data["prev_close"], data["prev_settlement"]
 
@@ -135,15 +130,8 @@ def recommend_spread(date: dt.datetime):
 
 def regression(si_val, index_val):
     
-    all_X = index_val.diff() / index_val.shift()
-    all_y = si_val.diff() / si_val.shift()
-
-    def reg_alpha(si_series: pd.Series):
-        y = si_series
-        X = all_X.reindex(si_series.index)
-        X = sm.add_constant(X)
-        model_params = sm.OLS(y, X).fit().params
-        return model_params.iloc[0]
+    all_X = index_val
+    all_y = si_val
     
     def reg_beta(si_series: pd.Series):
         y = si_series
@@ -151,18 +139,19 @@ def regression(si_val, index_val):
         X = sm.add_constant(X)
         model_params = sm.OLS(y, X).fit().params
         return model_params.iloc[1]
-
-    alpha = all_y.reindex(index_val.index).rolling(10).apply(reg_alpha).reindex(si_val.index)
+    
     beta = all_y.reindex(index_val.index).rolling(10).apply(reg_beta).reindex(si_val.index)
 
-    pos_X = all_X[all_X >= 0]
-    neg_X = all_X[all_X < 0]
-    pos_y = all_y[pos_X.index]
-    neg_y = all_y[neg_X.index]
-    pos_beta = sm.OLS(pos_y, sm.add_constant(pos_X)).fit().params.iloc[1]
-    neg_beta = sm.OLS(neg_y, sm.add_constant(neg_X)).fit().params.iloc[1]
-
-    return alpha, beta, pos_beta / neg_beta
+    """
+        pos_X = all_X[all_X >= 0]
+        neg_X = all_X[all_X < 0]
+        pos_y = all_y[pos_X.index]
+        neg_y = all_y[neg_X.index]
+        pos_beta = sm.OLS(pos_y, sm.add_constant(pos_X)).fit().params.iloc[1]
+        neg_beta = sm.OLS(neg_y, sm.add_constant(neg_X)).fit().params.iloc[1]
+    """
+    
+    return beta, None
 
 
 def main(price: float=None, date: dt.datetime=None):
@@ -170,15 +159,16 @@ def main(price: float=None, date: dt.datetime=None):
     today_open, minute_price, vwap, volume = get_minute_si(date)
     index = calculate_index(date).reindex(minute_price.index) * minute_price.iloc[0]
     try:
-        alpha, beta, pn_ratio = regression(index, minute_price)
+        beta, pn_ratio = regression(index, minute_price)
     except:
-        alpha, beta, pn_ratio = None, None, None
+        beta, pn_ratio = None, None
     numeric_index = np.arange(len(minute_price))
     xticks = numeric_index[::15]
 
-    fig, axes = plt.subplots(2, 1, figsize=(12, 6), gridspec_kw={'height_ratios': [3, 1]})
+    fig, axes = plt.subplots(3, 1, figsize=(12, 8), gridspec_kw={'height_ratios': [3, 1, 1]})
+    plt.tight_layout(rect=[0, 0, 0.9, 0.98])
 
-    ax1, ax2 = axes
+    ax1, ax2, ax3 = axes
     ax1.plot(numeric_index, minute_price, label=si_dom)
     ax1.plot(numeric_index, vwap, label="VWAP")
     ax1.plot(numeric_index, index, label="Index")
@@ -193,34 +183,40 @@ def main(price: float=None, date: dt.datetime=None):
     ax1.set_xticklabels([])
     ax1.grid(True)
 
-    ax2.plot(numeric_index, minute_price - index)
-    if spread:
-        ax2.axhline(recommend_spread(date), linestyle="--", color="orange")
-    if beta is not None:
-        ax2_ = ax2.twinx()
-        ax2_.bar(numeric_index, alpha, color="grey", width=0.5)
-        ax2_.axhline(0, color="red")
+    spread = minute_price - index
+    vw_spread = (spread * volume).cumsum() / volume.cumsum()
+    ax2.plot(numeric_index, spread)
+    ax2.plot(numeric_index, vw_spread)
+    if rec_spread:
+        ax2.axhline(recommend_spread(date), linestyle="--", color="red")
     ax2.set_xlim(0, 225)
-    ax2.set_xticks(xticks, [minute_price.index[i].strftime('%H:%M') for i in xticks])
+    ax2.set_xticklabels([])
     ax2.grid(True)
 
-    plt.tight_layout(rect=[0, 0, 0.9, 0.98])
-    if pn_ratio is not None:
-        fig.text(0.92, 0.25, 
-            "%.2f%%" % (pn_ratio * 100), fontsize=12, 
-            bbox=dict(boxstyle='round', facecolor=("green" if pn_ratio < 1 else "red"), alpha=0.5))
+    if beta is not None:
+        smoothed_beta = pd.Series(savgol_filter(beta.shift(-5), 5, 2), index=beta.index)
+        avg_beta = smoothed_beta.dropna().mean()
+        smoothed_beta -= avg_beta
+        ax3.bar(numeric_index, smoothed_beta, color="grey", width=0.5)
+        ax3.axhline(0, color="red")
+        fig.text(0.92, 0.18, 
+            "%.2f%%" % (avg_beta * 100), fontsize=12, 
+            bbox=dict(boxstyle='round', facecolor="lightblue", alpha=0.5))
+    ax3.set_xlim(0, 225)
+    ax3.set_xticks(xticks, [minute_price.index[i].strftime('%H:%M') for i in xticks])
+    ax3.grid(True)
     
     if (last_data := get_last_price(date)):
         last_close, last_settle = last_data
-        fig.text(0.92, 0.9, 
+        fig.text(0.93, 0.92, 
                 "昨收 %d\n昨结 %d\n今开 %d" % (last_close, last_settle, today_open), 
                 va='center', ha='left', fontsize=12, 
                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
         chg_close = (today_open / last_close - 1) * 100
-        fig.text(0.92, 0.80, "%.2f%%" % chg_close, fontsize=12,
+        fig.text(0.93, 0.85, "%.2f%%" % chg_close, fontsize=12,
                 bbox=dict(boxstyle="round", facecolor=("green" if chg_close < 0 else "red"), alpha=0.5))
         chg_settle = (today_open / last_settle - 1) * 100
-        fig.text(0.92, 0.75, "%.2f%%" % chg_settle, fontsize=12,
+        fig.text(0.93, 0.81, "%.2f%%" % chg_settle, fontsize=12,
                 bbox=dict(boxstyle="round", facecolor=("green" if chg_settle < 0 else "red"), alpha=0.5))
 
     ax1.set_title(date.strftime("%Y-%m-%d"))
@@ -243,11 +239,16 @@ if __name__ == "__main__":
     if args.index:
         calculate_index_weight()
     if args.spread:
-        spread = True
+        rec_spread = True
 
     date = pd.to_datetime(dt.date.today())
     if rq_ready and args.date:
         date = pd.to_datetime(args.date)
+        si_dom = rq.futures.get_dominant("SI")[date]
+    else:
+        with io.capture_output() as _:
+            gfex_text = ak.match_main_contract(symbol="gfex")
+        si_dom = gfex_text[:6]
     
     main(args.price, date)
 
