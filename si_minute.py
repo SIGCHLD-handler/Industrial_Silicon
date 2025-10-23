@@ -182,6 +182,16 @@ def main(price: float=None, date: dt.datetime=None):
     ax1.set_xlim(0, 225)
     ax1.set_xticklabels([])
     ax1.grid(True)
+    ret_rate = (minute_price.diff() / minute_price.shift()).dropna()
+    fig.text(0.93, 0.70, "%.2f‰" % (ret_rate.mean()*1000), fontsize=12,
+             bbox=dict(boxstyle="round", facecolor="lightblue", alpha=0.5))
+    fig.text(0.93, 0.66, "%.2f‰" % (ret_rate.std()*1000), fontsize=12,
+             bbox=dict(boxstyle="round", facecolor="lightblue", alpha=0.5))
+    index_ret = (index.diff() / index.shift()).dropna()
+    fig.text(0.93, 0.62, "%.2f‰" % (index_ret.mean()*1000), fontsize=12,
+             bbox=dict(boxstyle="round", facecolor="lightgreen", alpha=0.5))
+    fig.text(0.93, 0.58, "%.2f‰" % (index_ret.std()*1000), fontsize=12,
+             bbox=dict(boxstyle="round", facecolor="lightgreen", alpha=0.5))
 
     spread = minute_price - index
     vw_spread = (spread * volume).cumsum() / volume.cumsum()
@@ -194,14 +204,17 @@ def main(price: float=None, date: dt.datetime=None):
     ax2.grid(True)
 
     if beta is not None:
-        smoothed_beta = pd.Series(savgol_filter(beta.shift(-5), 5, 2), index=beta.index)
-        avg_beta = smoothed_beta.dropna().mean()
-        smoothed_beta -= avg_beta
-        ax3.bar(numeric_index, smoothed_beta, color="grey", width=0.5)
-        ax3.axhline(0, color="red")
-        fig.text(0.92, 0.18, 
-            "%.2f%%" % (avg_beta * 100), fontsize=12, 
-            bbox=dict(boxstyle='round', facecolor="lightblue", alpha=0.5))
+        try:
+            smoothed_beta = pd.Series(savgol_filter(beta.dropna(), 5, 2), index=beta.dropna().index).reindex(beta.index).shift(-5)
+            avg_beta = smoothed_beta.dropna().mean()
+            smoothed_beta -= avg_beta
+            ax3.bar(numeric_index, smoothed_beta, color="grey", width=0.5)
+            fig.text(0.92, 0.18, 
+                     "%.2f%%" % (avg_beta * 100), fontsize=12, 
+                     bbox=dict(boxstyle='round', facecolor="lightblue", alpha=0.5))
+        except:
+            smoothed_beta = None
+    ax3.axhline(0, color="red")
     ax3.set_xlim(0, 225)
     ax3.set_xticks(xticks, [minute_price.index[i].strftime('%H:%M') for i in xticks])
     ax3.grid(True)
@@ -209,17 +222,17 @@ def main(price: float=None, date: dt.datetime=None):
     if (last_data := get_last_price(date)):
         last_close, last_settle = last_data
         fig.text(0.93, 0.92, 
-                "昨收 %d\n昨结 %d\n今开 %d" % (last_close, last_settle, today_open), 
-                va='center', ha='left', fontsize=12, 
-                bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
+                 "昨收 %d\n昨结 %d\n今开 %d" % (last_close, last_settle, today_open), 
+                 va='center', ha='left', fontsize=12, 
+                 bbox=dict(boxstyle='round', facecolor='lightblue', alpha=0.5))
         chg_close = (today_open / last_close - 1) * 100
-        fig.text(0.93, 0.85, "%.2f%%" % chg_close, fontsize=12,
-                bbox=dict(boxstyle="round", facecolor=("green" if chg_close < 0 else "red"), alpha=0.5))
+        fig.text(0.93, 0.84, "%.2f%%" % chg_close, fontsize=12,
+                 bbox=dict(boxstyle="round", facecolor=("green" if chg_close < 0 else "red"), alpha=0.5))
         chg_settle = (today_open / last_settle - 1) * 100
-        fig.text(0.93, 0.81, "%.2f%%" % chg_settle, fontsize=12,
-                bbox=dict(boxstyle="round", facecolor=("green" if chg_settle < 0 else "red"), alpha=0.5))
+        fig.text(0.93, 0.80, "%.2f%%" % chg_settle, fontsize=12,
+                 bbox=dict(boxstyle="round", facecolor=("green" if chg_settle < 0 else "red"), alpha=0.5))
 
-    ax1.set_title(date.strftime("%Y-%m-%d"))
+    ax1.set_title("%s -- %s" % (date.strftime("%Y-%m-%d"), min(minute_price.index[-1], index.index[-1]).strftime("%H:%M")))
     plt.show()
 
 if __name__ == "__main__":
@@ -251,4 +264,3 @@ if __name__ == "__main__":
         si_dom = gfex_text[:6]
     
     main(args.price, date)
-
